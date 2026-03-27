@@ -6,6 +6,7 @@
 
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
 import { ensureWorkerRunning, workerHttpRequest } from '../../shared/worker-utils.js';
+import { getProjectName } from '../../utils/project-name.js';
 import { logger } from '../../utils/logger.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { isProjectExcluded } from '../../utils/project-filter.js';
@@ -25,6 +26,39 @@ export const observationHandler: EventHandler = {
 
     if (!toolName) {
       // No tool name provided - skip observation gracefully
+      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+    }
+
+    // Review gate responses are user input, not tool output — reclassify as user prompts
+    // to prevent AI observation model history poisoning (non-XML responses cascade)
+    if (toolName === 'review_gate_chat') {
+      let userText = '';
+      let parsed: unknown = toolResponse;
+      if (typeof parsed === 'string') {
+        const raw = parsed;
+        try { parsed = JSON.parse(raw) as unknown; } catch { userText = raw; }
+      }
+      if (!userText && parsed && typeof parsed === 'object') {
+        const resp = parsed as Record<string, unknown>;
+        const content = Array.isArray(resp.content) ? resp.content : [];
+        const textParts = content
+          .filter((c: Record<string, unknown>) => c.type === 'text' && typeof c.text === 'string')
+          .map((c: Record<string, unknown>) => c.text as string);
+        userText = textParts.length > 0 ? textParts.join('\n') : JSON.stringify(parsed);
+      }
+      if (!userText) userText = String(toolResponse ?? '');
+      try {
+        await workerHttpRequest('/api/sessions/init', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contentSessionId: sessionId,
+            project: getProjectName(cwd),
+            prompt: userText
+          })
+        });
+        logger.debug('HOOK', 'Review gate reclassified as user prompt', { contentSessionId: sessionId });
+      } catch { /* graceful failure — review gate storage is best-effort */ }
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 

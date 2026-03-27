@@ -385,6 +385,10 @@ export class OpenRouterAgent {
 
     if (!response.ok) {
       const errorText = await response.text();
+      if (response.status === 405) {
+        logger.warn('SDK', 'OpenRouter 405 WAF block, attempting Mistral fallback', { model });
+        return this.queryMistralFallback(truncatedHistory);
+      }
       throw new Error(`OpenRouter API error: ${response.status} - ${errorText}`);
     }
 
@@ -426,6 +430,57 @@ export class OpenRouterAgent {
           estimatedCost: estimatedCost.toFixed(4)
         });
       }
+    }
+
+    return { content, tokensUsed };
+  }
+
+  /**
+   * Fallback to Mistral direct API when OpenRouter fails (e.g., 405 WAF blocks)
+   * Uses the same OpenAI-compatible format — only endpoint and auth differ.
+   */
+  private async queryMistralFallback(
+    truncatedHistory: ConversationMessage[]
+  ): Promise<{ content: string; tokensUsed?: number }> {
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const mistralKey = settings.CLAUDE_MEM_MISTRAL_API_KEY;
+    if (!mistralKey) {
+      throw new Error('Mistral fallback unavailable: CLAUDE_MEM_MISTRAL_API_KEY not set');
+    }
+
+    const messages = this.conversationToOpenAIMessages(truncatedHistory);
+
+    const response = await fetch('https://api.mistral.ai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${mistralKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: settings.CLAUDE_MEM_MISTRAL_MODEL || 'mistral-small-latest',
+        messages,
+        temperature: 0.3,
+        max_tokens: 4096,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Mistral fallback error: ${response.status} - ${errorText}`);
+    }
+
+    const data = await response.json() as OpenRouterResponse;
+    const content = data.choices?.[0]?.message?.content || '';
+    const tokensUsed = data.usage?.total_tokens;
+
+    if (tokensUsed) {
+      logger.info('SDK', 'Mistral fallback API usage', {
+        model: settings.CLAUDE_MEM_MISTRAL_MODEL || 'mistral-small-latest',
+        inputTokens: data.usage?.prompt_tokens || 0,
+        outputTokens: data.usage?.completion_tokens || 0,
+        totalTokens: tokensUsed,
+        messagesInContext: truncatedHistory.length
+      });
     }
 
     return { content, tokensUsed };

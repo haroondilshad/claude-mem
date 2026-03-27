@@ -479,11 +479,34 @@ export class PendingMessageStore {
     return {
       type: persistent.message_type,
       tool_name: persistent.tool_name || undefined,
-      tool_input: persistent.tool_input ? JSON.parse(persistent.tool_input) : undefined,
-      tool_response: persistent.tool_response ? JSON.parse(persistent.tool_response) : undefined,
+      tool_input: this.safeParseJsonField(persistent.tool_input, 'tool_input'),
+      tool_response: this.safeParseJsonField(persistent.tool_response, 'tool_response'),
       prompt_number: persistent.prompt_number || undefined,
       cwd: persistent.cwd || undefined,
       last_assistant_message: persistent.last_assistant_message || undefined
     };
+  }
+
+  /**
+   * Truncated or corrupted JSON (e.g. ~20KB cap cutting mid-string) must not brick the queue.
+   */
+  private safeParseJsonField(
+    raw: string | null,
+    field: 'tool_input' | 'tool_response'
+  ): unknown {
+    if (raw == null || raw === '') return undefined;
+    try {
+      return JSON.parse(raw);
+    } catch {
+      logger.warn('QUEUE', `Invalid JSON in ${field} — using repair placeholder`, {
+        byteLength: raw.length,
+        preview: raw.slice(0, 160)
+      });
+      return {
+        _jsonParseError: true,
+        _field: field,
+        _byteLength: raw.length
+      };
+    }
   }
 }

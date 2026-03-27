@@ -28,9 +28,9 @@ import {
   type FallbackAgent
 } from './agents/index.js';
 
-// Gemini API endpoint — use v1 (stable), not v1beta.
-// v1beta does not support newer models like gemini-3-flash.
-const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1/models';
+// Gemini API endpoint — v1beta required for preview models (gemini-3-flash-preview).
+// All stable models (2.5-flash, 2.5-flash-lite) also work on v1beta.
+const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
 
 // Gemini model types (available via API)
 export type GeminiModel =

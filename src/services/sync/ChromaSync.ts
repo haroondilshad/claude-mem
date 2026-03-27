@@ -116,17 +116,50 @@ export class ChromaSync {
   }
 
   /**
+   * Chroma (Python) only accepts scalar metadata values; never pass objects/arrays through MCP.
+   */
+  private sanitizeChromaMetadata(meta: Record<string, string | number>): Record<string, string | number | boolean> {
+    const out: Record<string, string | number | boolean> = {};
+    for (const [k, v] of Object.entries(meta)) {
+      if (v === undefined || v === null) continue;
+      if (typeof v === 'boolean' || typeof v === 'number') {
+        out[k] = v;
+      } else if (typeof v === 'string') {
+        out[k] = v;
+      } else {
+        out[k] = String(v);
+      }
+    }
+    return out;
+  }
+
+  /** Parse observation JSON array fields; tolerate truncated/invalid JSON from SQLite. */
+  private safeParseStringArray(json: string | null, fieldName: string): string[] {
+    if (!json) return [];
+    try {
+      const parsed = JSON.parse(json) as unknown;
+      if (!Array.isArray(parsed)) return [];
+      return parsed.map((x) => String(x));
+    } catch {
+      logger.warn('CHROMA_SYNC', `Invalid JSON in observation ${fieldName}, skipping field`, {
+        preview: json.slice(0, 120)
+      });
+      return [];
+    }
+  }
+
+  /**
    * Format observation into Chroma documents (granular approach)
    * Each semantic field becomes a separate vector document
    */
   private formatObservationDocs(obs: StoredObservation): ChromaDocument[] {
     const documents: ChromaDocument[] = [];
 
-    // Parse JSON fields
-    const facts = obs.facts ? JSON.parse(obs.facts) : [];
-    const concepts = obs.concepts ? JSON.parse(obs.concepts) : [];
-    const files_read = obs.files_read ? JSON.parse(obs.files_read) : [];
-    const files_modified = obs.files_modified ? JSON.parse(obs.files_modified) : [];
+    // Parse JSON fields (defensive: invalid/truncated JSON must not break Chroma sync)
+    const facts = this.safeParseStringArray(obs.facts, 'facts');
+    const concepts = this.safeParseStringArray(obs.concepts, 'concepts');
+    const files_read = this.safeParseStringArray(obs.files_read, 'files_read');
+    const files_modified = this.safeParseStringArray(obs.files_modified, 'files_modified');
 
     const baseMetadata: Record<string, string | number> = {
       sqlite_id: obs.id,
@@ -143,13 +176,13 @@ export class ChromaSync {
       baseMetadata.subtitle = obs.subtitle;
     }
     if (concepts.length > 0) {
-      baseMetadata.concepts = concepts.join(',');
+      baseMetadata.concepts = concepts.map(String).join(',');
     }
     if (files_read.length > 0) {
-      baseMetadata.files_read = files_read.join(',');
+      baseMetadata.files_read = files_read.map(String).join(',');
     }
     if (files_modified.length > 0) {
-      baseMetadata.files_modified = files_modified.join(',');
+      baseMetadata.files_modified = files_modified.map(String).join(',');
     }
 
     // Narrative as separate document
@@ -174,7 +207,7 @@ export class ChromaSync {
     facts.forEach((fact: string, index: number) => {
       documents.push({
         id: `obs_${obs.id}_fact_${index}`,
-        document: fact,
+        document: typeof fact === 'string' ? fact : String(fact),
         metadata: { ...baseMetadata, field_type: 'fact', fact_index: index }
       });
     });
@@ -267,13 +300,13 @@ export class ChromaSync {
     for (let i = 0; i < documents.length; i += this.BATCH_SIZE) {
       const batch = documents.slice(i, i + this.BATCH_SIZE);
 
-      // Sanitize metadata: filter out null, undefined, and empty string values
-      // that chroma-mcp may reject (e.g., null subtitle from raw SQLite rows)
-      const cleanMetadatas = batch.map(d =>
-        Object.fromEntries(
-          Object.entries(d.metadata).filter(([_, v]) => v !== null && v !== undefined && v !== '')
-        )
-      );
+      // Scalar metadata for Chroma Python + drop null/undefined/empty (chroma-mcp rejects empties)
+      const cleanMetadatas = batch.map(d => {
+        const sanitized = this.sanitizeChromaMetadata(d.metadata);
+        return Object.fromEntries(
+          Object.entries(sanitized).filter(([_, v]) => v !== null && v !== undefined && v !== '')
+        );
+      });
 
       try {
         await chromaMcp.callTool('chroma_add_documents', {

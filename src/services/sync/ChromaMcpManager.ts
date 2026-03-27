@@ -225,6 +225,7 @@ export class ChromaMcpManager {
     }
 
     // Local mode: persistent client with data directory
+    // Pin Python <=3.13 because chromadb's pydantic v1 is incompatible with 3.14+
     return [
       '--python', pythonVersion,
       'chroma-mcp',

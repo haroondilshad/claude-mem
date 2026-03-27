@@ -188,6 +188,25 @@ Install on Ubuntu: `apt-get install jq curl`
 
 4. Check Hooks output channel in Cursor for error messages
 
+### Worker not running after reboot
+
+The worker doesn't auto-start unless a macOS Launch Agent is configured. Without it, the first `beforeSubmitPrompt` hook tries to start the worker on-demand, but parallel hook execution can cause a race condition (two hooks simultaneously spawning daemons on port 37777).
+
+**Recommended fix:** Set up a Launch Agent for persistent worker management:
+
+```bash
+# The Launch Agent plist at ~/Library/LaunchAgents/com.hd.claude-mem.worker.plist
+# runs a wrapper script that starts the worker in --daemon mode.
+# KeepAlive=true with 30s ThrottleInterval ensures restart on crash.
+
+# Check if Launch Agent is active
+launchctl list | grep claude-mem
+
+# Reload after editing plist
+launchctl unload ~/Library/LaunchAgents/com.hd.claude-mem.worker.plist
+launchctl load ~/Library/LaunchAgents/com.hd.claude-mem.worker.plist
+```
+
 ### Worker not responding
 
 1. Verify worker is running:
@@ -197,7 +216,7 @@ Install on Ubuntu: `apt-get install jq curl`
 
 2. Check worker logs:
    ```bash
-   tail -f ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log
+   tail -f ~/.claude-mem/logs/claude-mem-$(date +%Y-%m-%d).log
    ```
 
 3. Restart worker:

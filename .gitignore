@@ -32,7 +32,13 @@ src/ui/viewer.html
 # Ignore WebStorm project files (for dinosaur IDE users)
 .idea/
 
+# Auto-generated context injection file
+.cursor/rules/claude-mem-context.mdc
+
 .claude-octopus/
 .claude/session-intent.md
 .claude/session-plan.md
 .octo/
+
+# Local-only bug notes (may contain machine-specific paths; never commit)
+docs/bug-fixes/launch-agent-path-issue.md
