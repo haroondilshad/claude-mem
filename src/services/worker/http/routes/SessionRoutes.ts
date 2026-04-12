@@ -22,6 +22,8 @@ import { PrivacyCheckValidator } from '../../validation/PrivacyCheckValidator.js
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import { getProcessBySession, ensureProcessExit } from '../../ProcessRegistry.js';
+import { getProjectName } from '../../../../utils/project-name.js';
+import { normalizePlatformSource } from '../../../../shared/platform-source.js';
 
 export class SessionRoutes extends BaseRouteHandler {
   private completionHandler: SessionCompletionHandler;
@@ -40,7 +42,8 @@ export class SessionRoutes extends BaseRouteHandler {
     super();
     this.completionHandler = new SessionCompletionHandler(
       sessionManager,
-      eventBroadcaster
+      eventBroadcaster,
+      dbManager
     );
   }
 
@@ -106,6 +109,8 @@ export class SessionRoutes extends BaseRouteHandler {
 
     // Start generator if not running
     if (!session.generatorPromise) {
+      // Apply tier routing before starting the generator
+      this.applyTierRouting(session);
       this.spawnInProgress.set(sessionDbId, true);
       this.startGeneratorWithProvider(session, selectedProvider, source);
       return;
@@ -126,6 +131,7 @@ export class SessionRoutes extends BaseRouteHandler {
       session.abortController = new AbortController();
       session.lastGeneratorActivity = Date.now();
       // Start a fresh generator
+      this.applyTierRouting(session);
       this.spawnInProgress.set(sessionDbId, true);
       this.startGeneratorWithProvider(session, selectedProvider, 'stale-recovery');
       return;
@@ -283,6 +289,7 @@ export class SessionRoutes extends BaseRouteHandler {
                 this.crashRecoveryScheduled.delete(sessionDbId);
                 const stillExists = this.sessionManager.getSession(sessionDbId);
                 if (stillExists && !stillExists.generatorPromise) {
+                  this.applyTierRouting(stillExists);
                   this.startGeneratorWithProvider(stillExists, this.getSelectedProvider(), 'crash-recovery');
                 }
               }, backoffMs);
@@ -321,6 +328,7 @@ export class SessionRoutes extends BaseRouteHandler {
     app.post('/api/sessions/observations', this.handleObservationsByClaudeId.bind(this));
     app.post('/api/sessions/summarize', this.handleSummarizeByClaudeId.bind(this));
     app.post('/api/sessions/complete', this.handleCompleteByClaudeId.bind(this));
+    app.get('/api/sessions/status', this.handleStatusByClaudeId.bind(this));
   }
 
   /**
@@ -348,6 +356,7 @@ export class SessionRoutes extends BaseRouteHandler {
         id: latestPrompt.id,
         content_session_id: latestPrompt.content_session_id,
         project: latestPrompt.project,
+        platform_source: latestPrompt.platform_source,
         prompt_number: latestPrompt.prompt_number,
         prompt_text: latestPrompt.prompt_text,
         created_at_epoch: latestPrompt.created_at_epoch
@@ -497,6 +506,8 @@ export class SessionRoutes extends BaseRouteHandler {
    */
   private handleObservationsByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
     const { contentSessionId, tool_name, tool_input, tool_response, cwd } = req.body;
+    const platformSource = normalizePlatformSource(req.body.platformSource);
+    const project = typeof cwd === 'string' && cwd.trim() ? getProjectName(cwd) : '';
 
     if (!contentSessionId) {
       return this.badRequest(res, 'Missing contentSessionId');
@@ -531,7 +542,7 @@ export class SessionRoutes extends BaseRouteHandler {
       const store = this.dbManager.getSessionStore();
 
       // Get or create session
-      const sessionDbId = store.createSDKSession(contentSessionId, '', '');
+      const sessionDbId = store.createSDKSession(contentSessionId, project, '', undefined, platformSource);
       const promptNumber = store.getPromptNumberFromUserPrompts(contentSessionId);
 
       // Privacy check: skip if user prompt was entirely private
@@ -595,6 +606,7 @@ export class SessionRoutes extends BaseRouteHandler {
    */
   private handleSummarizeByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
     const { contentSessionId, last_assistant_message } = req.body;
+    const platformSource = normalizePlatformSource(req.body.platformSource);
 
     if (!contentSessionId) {
       return this.badRequest(res, 'Missing contentSessionId');
@@ -603,7 +615,7 @@ export class SessionRoutes extends BaseRouteHandler {
     const store = this.dbManager.getSessionStore();
 
     // Get or create session
-    const sessionDbId = store.createSDKSession(contentSessionId, '', '');
+    const sessionDbId = store.createSDKSession(contentSessionId, '', '', undefined, platformSource);
     const promptNumber = store.getPromptNumberFromUserPrompts(contentSessionId);
 
     // Privacy check: skip if user prompt was entirely private
@@ -632,6 +644,39 @@ export class SessionRoutes extends BaseRouteHandler {
   });
 
   /**
+   * Get session status by contentSessionId (summarize handler polls this)
+   * GET /api/sessions/status?contentSessionId=...
+   *
+   * Returns queue depth so the Stop hook can wait for summary completion.
+   */
+  private handleStatusByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
+    const contentSessionId = req.query.contentSessionId as string;
+
+    if (!contentSessionId) {
+      return this.badRequest(res, 'Missing contentSessionId query parameter');
+    }
+
+    const store = this.dbManager.getSessionStore();
+    const sessionDbId = store.createSDKSession(contentSessionId, '', '');
+    const session = this.sessionManager.getSession(sessionDbId);
+
+    if (!session) {
+      res.json({ status: 'not_found', queueLength: 0 });
+      return;
+    }
+
+    const pendingStore = this.sessionManager.getPendingMessageStore();
+    const queueLength = pendingStore.getPendingCount(sessionDbId);
+
+    res.json({
+      status: 'active',
+      sessionDbId,
+      queueLength,
+      uptime: Date.now() - session.startTime
+    });
+  });
+
+  /**
    * Complete session by contentSessionId (session-complete hook uses this)
    * POST /api/sessions/complete
    * Body: { contentSessionId }
@@ -643,6 +688,7 @@ export class SessionRoutes extends BaseRouteHandler {
    */
   private handleCompleteByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const { contentSessionId } = req.body;
+    const platformSource = normalizePlatformSource(req.body.platformSource);
 
     logger.info('HTTP', '→ POST /api/sessions/complete', { contentSessionId });
 
@@ -654,21 +700,22 @@ export class SessionRoutes extends BaseRouteHandler {
 
     // Look up sessionDbId from contentSessionId (createSDKSession is idempotent)
     // Pass empty strings - we only need the ID lookup, not to create a new session
-    const sessionDbId = store.createSDKSession(contentSessionId, '', '');
+    const sessionDbId = store.createSDKSession(contentSessionId, '', '', undefined, platformSource);
 
     // Check if session is in the active sessions map
     const activeSession = this.sessionManager.getSession(sessionDbId);
     if (!activeSession) {
       // Session may not be in memory (already completed or never initialized)
-      logger.debug('SESSION', 'session-complete: Session not in active map', {
+      // Still proceed with DB-backed completion so the row gets marked completed
+      logger.debug('SESSION', 'session-complete: Session not in active map; continuing with DB-backed completion', {
         contentSessionId,
         sessionDbId
       });
-      res.json({ status: 'skipped', reason: 'not_active' });
-      return;
     }
 
-    // Complete the session (removes from active sessions map)
+    // Complete the session (removes from active sessions map if present)
+    // Note: The Stop hook (summarize handler) waits for pending work before calling
+    // this endpoint. No polling here — that's the hook's responsibility.
     await this.completionHandler.completeByDbId(sessionDbId);
 
     logger.info('SESSION', 'Session completed via API', {
@@ -676,7 +723,7 @@ export class SessionRoutes extends BaseRouteHandler {
       sessionDbId
     });
 
-    res.json({ status: 'completed', sessionDbId });
+    res.json({ status: activeSession ? 'completed' : 'completed_db_only', sessionDbId });
   });
 
   /**
@@ -698,11 +745,13 @@ export class SessionRoutes extends BaseRouteHandler {
     // may omit prompt/project in their payload (#838, #1049)
     const project = req.body.project || 'unknown';
     const prompt = req.body.prompt || '[media prompt]';
+    const platformSource = normalizePlatformSource(req.body.platformSource);
     const customTitle = req.body.customTitle || undefined;
 
     logger.info('HTTP', 'SessionRoutes: handleSessionInitByClaudeId called', {
       contentSessionId,
       project,
+      platformSource,
       prompt_length: prompt?.length,
       customTitle
     });
@@ -715,7 +764,7 @@ export class SessionRoutes extends BaseRouteHandler {
     const store = this.dbManager.getSessionStore();
 
     // Step 1: Create/get SDK session (idempotent INSERT OR IGNORE)
-    const sessionDbId = store.createSDKSession(contentSessionId, project, prompt, customTitle);
+    const sessionDbId = store.createSDKSession(contentSessionId, project, prompt, customTitle, platformSource);
 
     // Verify session creation with DB lookup
     const dbSession = store.getSessionById(sessionDbId);
@@ -777,4 +826,60 @@ export class SessionRoutes extends BaseRouteHandler {
       contextInjected
     });
   });
+
+  // Simple tool names that produce low-complexity observations
+  private static readonly SIMPLE_TOOLS = new Set([
+    'Read', 'Glob', 'Grep', 'LS', 'ListMcpResourcesTool'
+  ]);
+
+  /**
+   * Apply tier routing: select model based on pending queue complexity.
+   * - Summarize in queue → summary model (e.g., Opus)
+   * - All simple tools → simple model (e.g., Haiku)
+   * - Otherwise → default model (no override)
+   */
+  private applyTierRouting(session: NonNullable<ReturnType<typeof this.sessionManager.getSession>>): void {
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    if (settings.CLAUDE_MEM_TIER_ROUTING_ENABLED === 'false') {
+      session.modelOverride = undefined;
+      return;
+    }
+
+    // Clear stale override before re-evaluating — prevents previous tier
+    // from persisting when queue composition changes between spawns.
+    session.modelOverride = undefined;
+
+    const pendingStore = this.sessionManager.getPendingMessageStore();
+    const pending = pendingStore.peekPendingTypes(session.sessionDbId);
+
+    if (pending.length === 0) {
+      session.modelOverride = undefined;
+      return;
+    }
+
+    const hasSummarize = pending.some(m => m.message_type === 'summarize');
+    const allSimple = pending.every(m =>
+      m.message_type === 'observation' && m.tool_name && SessionRoutes.SIMPLE_TOOLS.has(m.tool_name)
+    );
+
+    if (hasSummarize) {
+      const summaryModel = settings.CLAUDE_MEM_TIER_SUMMARY_MODEL;
+      if (summaryModel) {
+        session.modelOverride = summaryModel;
+        logger.debug('SESSION', `Tier routing: summary model`, {
+          sessionId: session.sessionDbId, model: summaryModel
+        });
+      }
+    } else if (allSimple) {
+      const simpleModel = settings.CLAUDE_MEM_TIER_SIMPLE_MODEL;
+      if (simpleModel) {
+        session.modelOverride = simpleModel;
+        logger.debug('SESSION', `Tier routing: simple model`, {
+          sessionId: session.sessionDbId, model: simpleModel
+        });
+      }
+    } else {
+      session.modelOverride = undefined;
+    }
+  }
 }

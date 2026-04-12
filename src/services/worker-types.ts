@@ -22,6 +22,7 @@ export interface ActiveSession {
   contentSessionId: string;      // User's Claude Code session being observed
   memorySessionId: string | null; // Memory agent's session ID for resume
   project: string;
+  platformSource: string;
   userPrompt: string;
   pendingMessages: PendingMessage[];  // Deprecated: now using persistent store, kept for compatibility
   abortController: AbortController;
@@ -40,6 +41,8 @@ export interface ActiveSession {
   // CLAIM-CONFIRM FIX: Track IDs of messages currently being processed
   // These IDs will be confirmed (deleted) after successful storage
   processingMessageIds: number[];
+  // Tier routing: model override per session based on queue complexity
+  modelOverride?: string;
 }
 
 export interface PendingMessage {
@@ -97,6 +100,7 @@ export interface PaginationParams {
   offset: number;
   limit: number;
   project?: string;
+  platformSource?: string;
 }
 
 // ============================================================================
@@ -117,6 +121,7 @@ export interface Observation {
   id: number;
   memory_session_id: string;  // Renamed from sdk_session_id
   project: string;
+  platform_source: string;
   type: string;
   title: string;
   subtitle: string | null;
@@ -135,6 +140,7 @@ export interface Summary {
   id: number;
   session_id: string; // content_session_id (from JOIN)
   project: string;
+  platform_source: string;
   request: string | null;
   investigated: string | null;
   learned: string | null;
@@ -149,6 +155,7 @@ export interface UserPrompt {
   id: number;
   content_session_id: string;  // Renamed from claude_session_id
   project: string; // From JOIN with sdk_sessions
+  platform_source: string;
   prompt_number: number;
   prompt_text: string;
   created_at: string;
@@ -159,6 +166,7 @@ export interface DBSession {
   id: number;
   content_session_id: string;    // Renamed from claude_session_id
   project: string;
+  platform_source: string;
   user_prompt: string;
   memory_session_id: string | null;  // Renamed from sdk_session_id
   status: 'active' | 'completed' | 'failed';
