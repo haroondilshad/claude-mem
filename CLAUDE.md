@@ -68,6 +68,7 @@ See `private/context/claude-code/exit-codes.md` for full hook behavior matrix.
 **Public Docs**: https://docs.claude-mem.ai (Mintlify)
 **Source**: `docs/public/` - MDX files, edit `docs.json` for navigation
 **Deploy**: Auto-deploys from GitHub on push to main
+**OpenRouter free models** (limits, evaluation, probe script): `docs/reports/openrouter-free-models-evaluation-2026-04.md`
 
 ## Pro Features Architecture
 

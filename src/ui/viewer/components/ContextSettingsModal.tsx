@@ -418,13 +418,24 @@ export function ContextSettingsModal({
                   </FormField>
                   <FormField
                     label="OpenRouter Model"
-                    tooltip="Model identifier from OpenRouter (e.g., anthropic/claude-3.5-sonnet, google/gemini-2.0-flash-thinking-exp)"
+                    tooltip="Primary model id (default free tier: Nemotron 3 Nano 30B)"
                   >
                     <input
                       type="text"
-                      value={formState.CLAUDE_MEM_OPENROUTER_MODEL || 'xiaomi/mimo-v2-flash:free'}
+                      value={formState.CLAUDE_MEM_OPENROUTER_MODEL || 'nvidia/nemotron-3-nano-30b-a3b:free'}
                       onChange={(e) => updateSetting('CLAUDE_MEM_OPENROUTER_MODEL', e.target.value)}
-                      placeholder="e.g., xiaomi/mimo-v2-flash:free"
+                      placeholder="e.g., nvidia/nemotron-3-nano-30b-a3b:free"
+                    />
+                  </FormField>
+                  <FormField
+                    label="OpenRouter fallback models"
+                    tooltip="Comma-separated ids tried in order when the primary returns 429 or 405 (shared free limits / WAF)"
+                  >
+                    <input
+                      type="text"
+                      value={formState.CLAUDE_MEM_OPENROUTER_MODEL_FALLBACKS ?? ''}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_OPENROUTER_MODEL_FALLBACKS', e.target.value)}
+                      placeholder="nvidia/nemotron-nano-9b-v2:free,google/gemma-4-31b-it:free"
                     />
                   </FormField>
                   <FormField

@@ -24,28 +24,35 @@ Claude-mem supports [OpenRouter](https://openrouter.ai) as an alternative provid
 
 OpenRouter actively supports democratizing AI access by offering free models. These are production-ready models suitable for observation extraction.
 
+### Shared rate limits (important)
+
+Free models are subject to **two** kinds of limits:
+
+1. **OpenRouter account “free-models-per-min”** — a **shared** throughput bucket for **all** free model calls on your API key (often ~16–20 requests/minute in error metadata). Heavy use of one model can cause **429s on another** in the same window.
+2. **Upstream provider limits** — the host behind OpenRouter (Google, NVIDIA, etc.) may return “**temporarily rate-limited upstream**” independently.
+
+See the **evaluation report** in the repo for details, burst-test results, and the probe script: **`docs/reports/openrouter-free-models-evaluation-2026-04.md`** (April 2026).
+
 ### Featured Free Models
 
-| Model | ID | Parameters | Context | Best For |
-|-------|------|------------|---------|----------|
-| **Xiaomi MiMo-V2-Flash** | `xiaomi/mimo-v2-flash:free` | 309B (15B active, MoE) | 256K | Reasoning, coding, agents |
-| **Gemini 2.0 Flash** | `google/gemini-2.0-flash-exp:free` | — | 1M | General purpose |
-| **Gemini 2.5 Flash** | `google/gemini-2.5-flash-preview:free` | — | 1M | Latest capabilities |
-| **DeepSeek R1** | `deepseek/deepseek-r1:free` | 671B | 64K | Reasoning, analysis |
-| **Llama 3.1 70B** | `meta-llama/llama-3.1-70b-instruct:free` | 70B | 128K | General purpose |
-| **Llama 3.1 8B** | `meta-llama/llama-3.1-8b-instruct:free` | 8B | 128K | Fast, lightweight |
-| **Mistral Nemo** | `mistralai/mistral-nemo:free` | 12B | 128K | Efficient performance |
+Model availability and `:free` slugs **change frequently**. Confirm IDs on [OpenRouter Models](https://openrouter.ai/models). Examples that have appeared for **128k+ context, text, $0**:
+
+| Model | Example ID | Notes |
+|-------|------------|--------|
+| **Gemma 4 31B Instruct** | `google/gemma-4-31b-it:free` | Strong general instruct; check evaluation report |
+| **Gemma 4 26B MoE** | `google/gemma-4-26b-a4b-it:free` | MoE (smaller active compute) |
+| **Nemotron 3 Nano** | `nvidia/nemotron-3-nano-30b-a3b:free` | Often good speed/limit balance |
 
 <Note>
-**Default Model**: Claude-mem uses `xiaomi/mimo-v2-flash:free` by default—a 309B parameter mixture-of-experts model that ranks #1 on SWE-bench Verified and excels at coding and reasoning tasks.
+**Defaults (April 2026)**: `CLAUDE_MEM_OPENROUTER_MODEL` = `nvidia/nemotron-3-nano-30b-a3b:free`, `CLAUDE_MEM_OPENROUTER_MODEL_FALLBACKS` = `nvidia/nemotron-nano-9b-v2:free,google/gemma-4-31b-it:free`. The worker tries each id in order when the previous returns **429** or **405**. Always **verify** ids on [OpenRouter’s model list](https://openrouter.ai/models)—free slugs change.
 </Note>
 
 ### Free Model Considerations
 
-- **Rate limits**: Free models may have stricter rate limits than paid models
+- **Rate limits**: Account-level free RPM **plus** per-provider caps; see shared limits above
 - **Availability**: Free capacity depends on provider partnerships and demand
 - **Queue times**: During peak usage, requests may be queued briefly
-- **Max tokens**: Most free models support 65,536 completion tokens
+- **Max tokens**: Varies by model; check OpenRouter model cards
 
 All free models support:
 - Tool use and function calling
@@ -73,7 +80,8 @@ All free models support:
 |---------|--------|---------|-------------|
 | `CLAUDE_MEM_PROVIDER` | `claude`, `gemini`, `openrouter` | `claude` | AI provider for observation extraction |
 | `CLAUDE_MEM_OPENROUTER_API_KEY` | string | — | Your OpenRouter API key |
-| `CLAUDE_MEM_OPENROUTER_MODEL` | string | `xiaomi/mimo-v2-flash:free` | Model identifier (see list above) |
+| `CLAUDE_MEM_OPENROUTER_MODEL` | string | `nvidia/nemotron-3-nano-30b-a3b:free` | Primary model id |
+| `CLAUDE_MEM_OPENROUTER_MODEL_FALLBACKS` | string | `nvidia/nemotron-nano-9b-v2:free,google/gemma-4-31b-it:free` | Comma-separated; tried on 429/405 |
 | `CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES` | number | `20` | Max messages in conversation history |
 | `CLAUDE_MEM_OPENROUTER_MAX_TOKENS` | number | `100000` | Token budget safety limit |
 | `CLAUDE_MEM_OPENROUTER_SITE_URL` | string | — | Optional: URL for analytics attribution |
@@ -97,7 +105,8 @@ Edit `~/.claude-mem/settings.json`:
 {
   "CLAUDE_MEM_PROVIDER": "openrouter",
   "CLAUDE_MEM_OPENROUTER_API_KEY": "sk-or-v1-your-key-here",
-  "CLAUDE_MEM_OPENROUTER_MODEL": "xiaomi/mimo-v2-flash:free"
+  "CLAUDE_MEM_OPENROUTER_MODEL": "nvidia/nemotron-3-nano-30b-a3b:free",
+  "CLAUDE_MEM_OPENROUTER_MODEL_FALLBACKS": "nvidia/nemotron-nano-9b-v2:free,google/gemma-4-31b-it:free"
 }
 ```
 
@@ -113,16 +122,11 @@ The settings file takes precedence over the environment variable.
 
 ### For Free Usage (No Cost)
 
-**Recommended**: `xiaomi/mimo-v2-flash:free`
-- Best-in-class performance on coding benchmarks
-- 256K context window handles large observations
-- 65K max completion tokens
-- Mixture-of-experts architecture (15B active parameters)
+**Recommended (free, April 2026 evaluation)**:
+- Primary: `nvidia/nemotron-3-nano-30b-a3b:free` — good balance of speed, limits, and structured XML in probes
+- Fallbacks: `nvidia/nemotron-nano-9b-v2:free`, `google/gemma-4-31b-it:free`
 
-**Alternatives**:
-- `google/gemini-2.0-flash-exp:free` - 1M context, Google's flagship
-- `deepseek/deepseek-r1:free` - Excellent reasoning capabilities
-- `meta-llama/llama-3.1-70b-instruct:free` - Strong general purpose
+See **`docs/reports/openrouter-free-models-evaluation-2026-04.md`** — new models must pass **`scripts/openrouter-structured-xml-probe.py`** (valid `<observation>` XML) before being added to defaults.
 
 ### For Paid Usage (Higher Quality/Speed)
 
@@ -156,7 +160,7 @@ Logs include detailed usage information:
 
 ```
 OpenRouter API usage: {
-  model: "xiaomi/mimo-v2-flash:free",
+  model: "nvidia/nemotron-3-nano-30b-a3b:free",
   inputTokens: 2500,
   outputTokens: 1200,
   totalTokens: 3700,
@@ -287,7 +291,7 @@ Content-Type: application/json
 **Request Format**:
 ```json
 {
-  "model": "xiaomi/mimo-v2-flash:free",
+  "model": "nvidia/nemotron-3-nano-30b-a3b:free",
   "messages": [
     {"role": "system", "content": "..."},
     {"role": "user", "content": "..."}
@@ -309,7 +313,7 @@ Content-Type: application/json
 | **Setup** | Automatic | API key required | API key required |
 
 <Tip>
-**Recommendation**: Start with OpenRouter's free `xiaomi/mimo-v2-flash:free` model for zero-cost observation extraction. If you need higher quality or encounter rate limits, switch to Claude or add OpenRouter credits for premium models.
+**Recommendation**: Use the default **Nemotron + Gemma** free stack above; configure fallbacks for rate limits. If you need higher quality or stable throughput, switch to Claude or add OpenRouter credits / provider keys.
 </Tip>
 
 ## Next Steps

@@ -24,3 +24,7 @@
 | #502 | 12:55 PM | ✅ | Gemini API upgraded to v1beta endpoint | ~170 |
 | #500 | " | 🔵 | Core system files modified | ~231 |
 </claude-mem-context>
+
+## OpenRouterAgent — free models & limits
+
+Burst tests, shared `free-models-per-min` vs upstream 429s, and how to evaluate new models: **`docs/reports/openrouter-free-models-evaluation-2026-04.md`**. Probe script: **`scripts/openrouter-free-rate-probe.py`** (repo root).

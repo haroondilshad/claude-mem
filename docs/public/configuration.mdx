@@ -35,7 +35,8 @@ See [Gemini Provider](usage/gemini-provider) for detailed configuration and free
 | Setting                                      | Default                     | Description                           |
 |----------------------------------------------|-----------------------------|---------------------------------------|
 | `CLAUDE_MEM_OPENROUTER_API_KEY`              | —                           | OpenRouter API key ([get key](https://openrouter.ai/keys)) |
-| `CLAUDE_MEM_OPENROUTER_MODEL`                | `xiaomi/mimo-v2-flash:free` | Model identifier (supports 100+ models) |
+| `CLAUDE_MEM_OPENROUTER_MODEL`                | `nvidia/nemotron-3-nano-30b-a3b:free` | Primary model id |
+| `CLAUDE_MEM_OPENROUTER_MODEL_FALLBACKS`      | `nvidia/nemotron-nano-9b-v2:free,google/gemma-4-31b-it:free` | Comma-separated ids; used on 429/405 |
 | `CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES` | `20`                        | Max messages in conversation history  |
 | `CLAUDE_MEM_OPENROUTER_MAX_TOKENS`           | `100000`                    | Token budget safety limit             |
 | `CLAUDE_MEM_OPENROUTER_SITE_URL`             | —                           | Optional: URL for analytics           |

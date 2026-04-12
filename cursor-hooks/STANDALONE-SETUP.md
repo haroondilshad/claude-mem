@@ -85,9 +85,9 @@ EOF
 
 **Get your API key**: https://openrouter.ai/keys
 
-**Free models available**:
-- `google/gemini-2.0-flash-exp:free`
-- `xiaomi/mimo-v2-flash:free`
+**Free models available** (ids change — check OpenRouter):
+- Example defaults in claude-mem: `nvidia/nemotron-3-nano-30b-a3b:free` with fallbacks `nvidia/nemotron-nano-9b-v2:free`, `google/gemma-4-31b-it:free`
+- See `docs/reports/openrouter-free-models-evaluation-2026-04.md`
 
 ### Option C: Claude API (If You Have API Access)
 

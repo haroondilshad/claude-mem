@@ -11,6 +11,7 @@ import { CorpusStore } from '../../knowledge/CorpusStore.js';
 import { CorpusBuilder } from '../../knowledge/CorpusBuilder.js';
 import { KnowledgeAgent } from '../../knowledge/KnowledgeAgent.js';
 import type { CorpusFilter } from '../../knowledge/types.js';
+import { logger } from '../../../../utils/logger.js';
 
 export class CorpusRoutes extends BaseRouteHandler {
   constructor(
@@ -19,6 +20,7 @@ export class CorpusRoutes extends BaseRouteHandler {
     private knowledgeAgent: KnowledgeAgent
   ) {
     super();
+    logger.debug('CORPUS', 'CorpusRoutes ready');
   }
 
   setupRoutes(app: express.Application): void {

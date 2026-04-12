@@ -86,7 +86,7 @@ export class OpenRouterAgent {
   async startSession(session: ActiveSession, worker?: WorkerRef): Promise<void> {
     try {
       // Get OpenRouter configuration
-      const { apiKey, model, siteUrl, appName } = this.getOpenRouterConfig();
+      const { apiKey, model, fallbacks, siteUrl, appName } = this.getOpenRouterConfig();
 
       if (!apiKey) {
         throw new Error('OpenRouter API key not configured. Set CLAUDE_MEM_OPENROUTER_API_KEY in settings or OPENROUTER_API_KEY environment variable.');
@@ -110,7 +110,7 @@ export class OpenRouterAgent {
 
       // Add to conversation history and query OpenRouter with full context
       session.conversationHistory.push({ role: 'user', content: initPrompt });
-      const initResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, model, siteUrl, appName);
+      const initResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, model, siteUrl, appName, fallbacks);
 
       if (initResponse.content) {
         // Add response to conversation history
@@ -137,7 +137,7 @@ export class OpenRouterAgent {
       } else {
         logger.error('SDK', 'Empty OpenRouter init response - session may lack context', {
           sessionId: session.sessionDbId,
-          model
+          model: initResponse.modelUsed ?? model
         });
       }
 
@@ -181,7 +181,7 @@ export class OpenRouterAgent {
 
           // Add to conversation history and query OpenRouter with full context
           session.conversationHistory.push({ role: 'user', content: obsPrompt });
-          const obsResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, model, siteUrl, appName);
+          const obsResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, model, siteUrl, appName, fallbacks);
 
           let tokensUsed = 0;
           if (obsResponse.content) {
@@ -224,7 +224,7 @@ export class OpenRouterAgent {
 
           // Add to conversation history and query OpenRouter with full context
           session.conversationHistory.push({ role: 'user', content: summaryPrompt });
-          const summaryResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, model, siteUrl, appName);
+          const summaryResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, model, siteUrl, appName, fallbacks);
 
           let tokensUsed = 0;
           if (summaryResponse.content) {
@@ -348,18 +348,72 @@ export class OpenRouterAgent {
   }
 
   /**
-   * Query OpenRouter via REST API with full conversation history (multi-turn)
-   * Sends the entire conversation context for coherent responses
+   * Query OpenRouter via REST API with full conversation history (multi-turn).
+   * Tries `primaryModel`, then each id in `fallbackModels`, on HTTP 429 or 405.
+   * If all OpenRouter models fail with 405, falls back to Mistral (when configured).
    */
   private async queryOpenRouterMultiTurn(
     history: ConversationMessage[],
     apiKey: string,
-    model: string,
-    siteUrl?: string,
-    appName?: string
-  ): Promise<{ content: string; tokensUsed?: number }> {
-    // Truncate history to prevent runaway costs
+    primaryModel: string,
+    siteUrl: string | undefined,
+    appName: string | undefined,
+    fallbackModels: string[]
+  ): Promise<{ content: string; tokensUsed?: number; modelUsed: string }> {
     const truncatedHistory = this.truncateHistory(history);
+    const chain = [primaryModel, ...fallbackModels];
+    let lastError: Error | null = null;
+
+    for (let i = 0; i < chain.length; i++) {
+      const model = chain[i];
+      const hasNext = i < chain.length - 1;
+      try {
+        const result = await this.executeOpenRouterChat(
+          truncatedHistory,
+          apiKey,
+          model,
+          siteUrl,
+          appName
+        );
+        if (i > 0) {
+          logger.info('SDK', 'OpenRouter fallback model succeeded', { model });
+        }
+        return { ...result, modelUsed: model };
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        const msg = lastError.message;
+        const is429 = /\b429\b/.test(msg) || /rate limit/i.test(msg);
+        const is405 = /\b405\b/.test(msg);
+        if (hasNext && (is429 || is405)) {
+          logger.warn('SDK', 'OpenRouter model failed, trying next model', {
+            failedModel: model,
+            reason: is405 ? '405' : 'rate-limit',
+            detail: msg.slice(0, 280)
+          });
+          continue;
+        }
+        if (is405 && !hasNext) {
+          logger.warn('SDK', 'OpenRouter 405 on last OpenRouter model, attempting Mistral fallback', { model });
+          const m = await this.queryMistralFallback(truncatedHistory);
+          return { content: m.content, tokensUsed: m.tokensUsed, modelUsed: m.modelUsed };
+        }
+        throw lastError;
+      }
+    }
+
+    throw lastError ?? new Error('OpenRouter: exhausted model fallbacks');
+  }
+
+  /**
+   * Single OpenRouter chat/completions request (one model).
+   */
+  private async executeOpenRouterChat(
+    truncatedHistory: ConversationMessage[],
+    apiKey: string,
+    model: string,
+    siteUrl: string | undefined,
+    appName: string | undefined
+  ): Promise<{ content: string; tokensUsed?: number }> {
     const messages = this.conversationToOpenAIMessages(truncatedHistory);
     const totalChars = truncatedHistory.reduce((sum, m) => sum + m.content.length, 0);
     const estimatedTokens = this.estimateTokens(truncatedHistory.map(m => m.content).join(''));
@@ -381,23 +435,18 @@ export class OpenRouterAgent {
       body: JSON.stringify({
         model,
         messages,
-        temperature: 0.3,  // Lower temperature for structured extraction
+        temperature: 0.3,
         max_tokens: 4096,
       }),
     });
 
     if (!response.ok) {
       const errorText = await response.text();
-      if (response.status === 405) {
-        logger.warn('SDK', 'OpenRouter 405 WAF block, attempting Mistral fallback', { model });
-        return this.queryMistralFallback(truncatedHistory);
-      }
       throw new Error(`OpenRouter API error: ${response.status} - ${errorText}`);
     }
 
     const data = await response.json() as OpenRouterResponse;
 
-    // Check for API error in response body
     if (data.error) {
       throw new Error(`OpenRouter API error: ${data.error.code} - ${data.error.message}`);
     }
@@ -410,11 +459,9 @@ export class OpenRouterAgent {
     const content = data.choices[0].message.content;
     const tokensUsed = data.usage?.total_tokens;
 
-    // Log actual token usage for cost tracking
     if (tokensUsed) {
       const inputTokens = data.usage?.prompt_tokens || 0;
       const outputTokens = data.usage?.completion_tokens || 0;
-      // Token usage (cost varies by model - many OpenRouter models are free)
       const estimatedCost = (inputTokens / 1000000 * 3) + (outputTokens / 1000000 * 15);
 
       logger.info('SDK', 'OpenRouter API usage', {
@@ -426,7 +473,6 @@ export class OpenRouterAgent {
         messagesInContext: truncatedHistory.length
       });
 
-      // Warn if costs are getting high
       if (tokensUsed > 50000) {
         logger.warn('SDK', 'High token usage detected - consider reducing context', {
           totalTokens: tokensUsed,
@@ -444,7 +490,7 @@ export class OpenRouterAgent {
    */
   private async queryMistralFallback(
     truncatedHistory: ConversationMessage[]
-  ): Promise<{ content: string; tokensUsed?: number }> {
+  ): Promise<{ content: string; tokensUsed?: number; modelUsed: string }> {
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     const mistralKey = settings.CLAUDE_MEM_MISTRAL_API_KEY;
     if (!mistralKey) {
@@ -452,6 +498,7 @@ export class OpenRouterAgent {
     }
 
     const messages = this.conversationToOpenAIMessages(truncatedHistory);
+    const mistralModelId = settings.CLAUDE_MEM_MISTRAL_MODEL || 'mistral-small-latest';
 
     const response = await fetch('https://api.mistral.ai/v1/chat/completions', {
       method: 'POST',
@@ -460,7 +507,7 @@ export class OpenRouterAgent {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: settings.CLAUDE_MEM_MISTRAL_MODEL || 'mistral-small-latest',
+        model: mistralModelId,
         messages,
         temperature: 0.3,
         max_tokens: 4096,
@@ -478,7 +525,7 @@ export class OpenRouterAgent {
 
     if (tokensUsed) {
       logger.info('SDK', 'Mistral fallback API usage', {
-        model: settings.CLAUDE_MEM_MISTRAL_MODEL || 'mistral-small-latest',
+        model: mistralModelId,
         inputTokens: data.usage?.prompt_tokens || 0,
         outputTokens: data.usage?.completion_tokens || 0,
         totalTokens: tokensUsed,
@@ -486,14 +533,14 @@ export class OpenRouterAgent {
       });
     }
 
-    return { content, tokensUsed };
+    return { content, tokensUsed, modelUsed: `mistral:${mistralModelId}` };
   }
 
   /**
    * Get OpenRouter configuration from settings or environment
    * Issue #733: Uses centralized ~/.claude-mem/.env for credentials, not random project .env files
    */
-  private getOpenRouterConfig(): { apiKey: string; model: string; siteUrl?: string; appName?: string } {
+  private getOpenRouterConfig(): { apiKey: string; model: string; fallbacks: string[]; siteUrl?: string; appName?: string } {
     const settingsPath = USER_SETTINGS_PATH;
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
 
@@ -501,14 +548,15 @@ export class OpenRouterAgent {
     // This prevents Issue #733 where random project .env files could interfere
     const apiKey = settings.CLAUDE_MEM_OPENROUTER_API_KEY || getCredential('OPENROUTER_API_KEY') || '';
 
-    // Model: from settings or default
-    const model = settings.CLAUDE_MEM_OPENROUTER_MODEL || 'xiaomi/mimo-v2-flash:free';
+    const model = settings.CLAUDE_MEM_OPENROUTER_MODEL;
+    const fallbacksRaw = settings.CLAUDE_MEM_OPENROUTER_MODEL_FALLBACKS || '';
+    const fallbacks = fallbacksRaw.split(',').map(s => s.trim()).filter(Boolean);
 
     // Optional analytics headers
     const siteUrl = settings.CLAUDE_MEM_OPENROUTER_SITE_URL || '';
     const appName = settings.CLAUDE_MEM_OPENROUTER_APP_NAME || 'claude-mem';
 
-    return { apiKey, model, siteUrl, appName };
+    return { apiKey, model, fallbacks, siteUrl, appName };
   }
 }
 

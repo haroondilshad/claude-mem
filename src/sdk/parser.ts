@@ -52,12 +52,15 @@ export function parseObservations(text: string, correlationId?: string): ParsedO
 
     // NOTE FROM THEDOTMACK: ALWAYS save observations - never skip. 10/24/2025
     // All fields except type are nullable in schema
-    // If type is missing or invalid, use first type from mode as fallback
+    // If type is missing or invalid, prefer a neutral type over the first enum entry
+    // (code mode lists bugfix first — a bad default for "model forgot to emit type").
 
     // Determine final type using active mode's valid types
     const mode = ModeManager.getInstance().getActiveMode();
     const validTypes = mode.observation_types.map(t => t.id);
-    const fallbackType = validTypes[0]; // First type in mode's list is the fallback
+    const FALLBACK_TYPE_PREFERENCE = ['change', 'discovery'] as const;
+    const fallbackType =
+      FALLBACK_TYPE_PREFERENCE.find((id) => validTypes.includes(id)) ?? validTypes[0];
     let finalType = fallbackType;
     if (type) {
       if (validTypes.includes(type.trim())) {
